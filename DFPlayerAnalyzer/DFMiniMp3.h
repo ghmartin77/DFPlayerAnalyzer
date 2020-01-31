@@ -1,0 +1,734 @@
+/*-------------------------------------------------------------------------
+  DFMiniMp3 library
+
+  Written by Michael C. Miller.
+
+  I invest time and resources providing this open source code,
+  please support me by dontating (see https://github.com/Makuna/DFMiniMp3)
+
+  -------------------------------------------------------------------------
+  This file is part of the Makuna/DFMiniMp3 library.
+
+  DFMiniMp3 is free software: you can redistribute it and/or modify
+  it under the terms of the GNU Lesser General Public License as
+  published by the Free Software Foundation, either version 3 of
+  the License, or (at your option) any later version.
+
+  DFMiniMp3 is distributed in the hope that it will be useful,
+  but WITHOUT ANY WARRANTY; without even the implied warranty of
+  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+  GNU Lesser General Public License for more details.
+
+  You should have received a copy of the GNU Lesser General Public
+  License along with DFMiniMp3.  If not, see
+  <http://www.gnu.org/licenses/>.
+  -------------------------------------------------------------------------*/
+#pragma once
+
+#define TIMEOUT_DEFAULT 1500
+#define TIMEOUT_LONG 10000
+
+enum DfMp3_Error
+{
+  // from device
+  DfMp3_Error_Busy = 1,
+  DfMp3_Error_Sleeping,
+  DfMp3_Error_SerialWrongStack,
+  DfMp3_Error_CheckSumNotMatch,
+  DfMp3_Error_FileIndexOut,
+  DfMp3_Error_FileMismatch,
+  DfMp3_Error_Advertise,
+  // from library
+  DfMp3_Error_RxTimeout = 0x81,
+  DfMp3_Error_PacketSize,
+  DfMp3_Error_PacketHeader,
+  DfMp3_Error_PacketChecksum,
+  DfMp3_Error_General = 0xff
+};
+
+
+enum DfMp3_PlaybackMode
+{
+  DfMp3_PlaybackMode_Repeat,
+  DfMp3_PlaybackMode_FolderRepeat,
+  DfMp3_PlaybackMode_SingleRepeat,
+  DfMp3_PlaybackMode_Random
+};
+
+
+enum DfMp3_Eq
+{
+  DfMp3_Eq_Normal,
+  DfMp3_Eq_Pop,
+  DfMp3_Eq_Rock,
+  DfMp3_Eq_Jazz,
+  DfMp3_Eq_Classic,
+  DfMp3_Eq_Bass
+};
+
+
+enum DfMp3_PlaySource
+{
+  DfMp3_PlaySource_Usb = 1,
+  DfMp3_PlaySource_Sd,
+  DfMp3_PlaySource_Aux,
+  DfMp3_PlaySource_Sleep,
+  DfMp3_PlaySource_Flash
+};
+
+
+template<class T_SERIAL_METHOD, class T_NOTIFICATION_METHOD> class DFMiniMp3
+{
+  public:
+    DFMiniMp3(T_SERIAL_METHOD& serial) :
+      _serial(serial),
+      _lastSendSpace(c_msSendSpace),
+      _isOnline(true)
+    {
+    }
+
+    void begin()
+    {
+      _serial.begin(9600);
+      _serial.setTimeout(TIMEOUT_DEFAULT);
+      _lastSend = millis();
+    }
+
+    void loop()
+    {
+      while (_serial.available() >= DfMp3_Packet_SIZE)
+      {
+        listenForReply(0x00);
+      }
+
+      if (_serial.overflow()) {
+#ifdef DEBUG_DFPLAYER_COMMUNICATION
+        Serial.print("[");
+        Serial.print(millis());
+        Serial.println("] Overflow on UART buffer for DFPlayer. Flushing...");
+#endif
+        _serial.flush();
+      }
+
+    }
+
+    // the track as enumerated across all folders
+    void playGlobalTrack(uint16_t track = 0)
+    {
+      sendPacket(0x03, track);
+    }
+
+    // sd:/mp3/####track name
+    void playMp3FolderTrack(uint16_t track)
+    {
+      sendPacket(0x12, track);
+    }
+
+    // sd:/###/###track name
+    void playFolderTrack(uint8_t folder, uint8_t track)
+    {
+      uint16_t arg = (folder << 8) | track;
+      sendPacket(0x0f, arg);
+    }
+
+    // sd:/##/####track name
+    // track number must be four digits, zero padded
+    void playFolderTrack16(uint8_t folder, uint16_t track)
+    {
+      uint16_t arg = (((uint16_t)folder) << 12) | track;
+      sendPacket(0x14, arg);
+    }
+
+    void playRandomTrackFromAll()
+    {
+      sendPacket(0x18);
+    }
+
+    void nextTrack()
+    {
+      sendPacket(0x01);
+    }
+
+    void prevTrack()
+    {
+      sendPacket(0x02);
+    }
+
+    uint16_t getCurrentTrack()
+    {
+      uint8_t command = 0x4c;
+
+      switch (_playSource) {
+        case DfMp3_PlaySource_Usb:
+          command = 0x4b;
+          break;
+        case DfMp3_PlaySource_Sd:
+          command = 0x4c;
+          break;
+        case DfMp3_PlaySource_Flash:
+          command = 0x4d;
+          break;
+      }
+
+      drainResponses();
+      sendPacket(command);
+      return listenForReply(command);
+    }
+
+    // Does not work with all models.
+    // YX5200-24SS - sends reply
+    // MH2024K-24SS - sends NO reply --> results in error notification
+    uint8_t queryStorageDevices(uint8_t device = 0)
+    {
+      drainResponses();
+      sendPacket(0x3f, device);
+      return listenForReply(0x03f);
+    }
+
+    // 0-30
+    void setVolume(uint8_t volume)
+    {
+      sendPacket(0x06, volume);
+    }
+
+    uint8_t getVolume()
+    {
+      drainResponses();
+      sendPacket(0x43);
+      return static_cast<uint8_t>(listenForReply(0x43));
+    }
+
+    void increaseVolume()
+    {
+      sendPacket(0x04);
+    }
+
+    void decreaseVolume()
+    {
+      sendPacket(0x05);
+    }
+
+    // useless, removed
+    // 0-31
+    /*
+      void setVolume(bool mute, uint8_t volume)
+      {
+        uint16_t arg = (!mute << 8) | volume;
+        sendPacket(0x10, arg);
+      }
+    */
+
+    void loopGlobalTrack(uint16_t globalTrack)
+    {
+      sendPacket(0x08, globalTrack);
+    }
+
+    DfMp3_PlaybackMode getPlaybackMode()
+    {
+      drainResponses();
+      sendPacket(0x45);
+      return static_cast<DfMp3_PlaybackMode>(listenForReply(0x45));
+    }
+
+    void setRepeatPlay(bool repeat)
+    {
+      sendPacket(0x11, repeat);
+    }
+
+
+    void setEq(DfMp3_Eq eq)
+    {
+      sendPacket(0x07, eq);
+    }
+
+    DfMp3_Eq getEq()
+    {
+      drainResponses();
+      sendPacket(0x44);
+      return static_cast<DfMp3_Eq>(listenForReply(0x44));
+    }
+
+    void setPlaybackSource(DfMp3_PlaySource source)
+    {
+      _playSource = source;
+      sendPacket(0x09, source, 200);
+    }
+
+    DfMp3_PlaySource getPlaybackSource()
+    {
+      return _playSource;
+    }
+
+    void sleep()
+    {
+      sendPacket(0x0a);
+    }
+
+    void reset()
+    {
+      sendPacket(0x0c, 0, 600);
+      _isOnline = false;
+    }
+
+    void start()
+    {
+      sendPacket(0x0d);
+    }
+
+    void pause()
+    {
+      sendPacket(0x0e);
+    }
+
+    void stop()
+    {
+      sendPacket(0x16);
+    }
+
+    uint16_t getStatus()
+    {
+      drainResponses();
+      sendPacket(0x42);
+      return listenForReply(0x42);
+    }
+
+    uint16_t getFolderTrackCount(uint16_t folder)
+    {
+      drainResponses();
+      sendPacket(0x4e, folder);
+      _serial.setTimeout(TIMEOUT_LONG);
+      uint16_t result = listenForReply(0x4e);
+      _serial.setTimeout(TIMEOUT_DEFAULT);
+      return result;
+    }
+
+    uint16_t getTotalTrackCountUsb()
+    {
+      drainResponses();
+      sendPacket(0x47);
+      _serial.setTimeout(TIMEOUT_LONG);
+      uint16_t result = listenForReply(0x47);
+      _serial.setTimeout(TIMEOUT_DEFAULT);
+      return result;
+    }
+
+    uint16_t getTotalTrackCountSd()
+    {
+      drainResponses();
+      sendPacket(0x48);
+      _serial.setTimeout(TIMEOUT_LONG);
+      uint16_t result = listenForReply(0x48);
+      _serial.setTimeout(TIMEOUT_DEFAULT);
+      return result;
+    }
+
+    uint16_t getTotalFolderCount()
+    {
+      drainResponses();
+      sendPacket(0x4F);
+      _serial.setTimeout(TIMEOUT_LONG);
+      uint16_t result = listenForReply(0x4f);
+      _serial.setTimeout(TIMEOUT_DEFAULT);
+      return result;
+    }
+
+    // sd:/advert/####track name
+    void playAdvertisement(uint16_t track)
+    {
+      sendPacket(0x13, track);
+    }
+
+    void stopAdvertisement()
+    {
+      sendPacket(0x15);
+    }
+
+    void enableDac()
+    {
+      sendPacket(0x1A, 0x00);
+    }
+
+    void disableDac()
+    {
+      sendPacket(0x1A, 0x01);
+    }
+
+    void setACK(bool ack)
+    {
+      _feedback = ack;
+    }
+
+  private:
+    static const uint16_t c_msSendSpace = 50;
+
+    // 7E FF 06 0F 00 01 01 xx xx EF
+    // 0	->	7E is start code
+    // 1	->	FF is version
+    // 2	->	06 is length
+    // 3	->	0F is command
+    // 4	->	00 is no receive
+    // 5~6	->	01 01 is argument
+    // 7~8	->	checksum = 0 - ( FF+06+0F+00+01+01 )
+    // 9	->	EF is end code
+    enum DfMp3_Packet
+    {
+      DfMp3_Packet_StartCode,
+      DfMp3_Packet_Version,
+      DfMp3_Packet_Length,
+      DfMp3_Packet_Command,
+      DfMp3_Packet_RequestAck,
+      DfMp3_Packet_HiByteArgument,
+      DfMp3_Packet_LowByteArgument,
+      DfMp3_Packet_HiByteCheckSum,
+      DfMp3_Packet_LowByteCheckSum,
+      DfMp3_Packet_EndCode,
+      DfMp3_Packet_SIZE
+    };
+
+
+    T_SERIAL_METHOD& _serial;
+    uint32_t _lastSend;
+    uint16_t _lastSendSpace;
+    bool _isOnline;
+    bool _feedback = false;
+    DfMp3_PlaySource _playSource = DfMp3_PlaySource_Sd;
+
+    void drainResponses()
+    {
+      while (_serial.available() > 0)
+      {
+        listenForReply(0x00);
+      }
+    }
+
+    void sendPacket(uint8_t command, uint16_t arg = 0, uint16_t sendSpaceNeeded = c_msSendSpace)
+    {
+      uint8_t out[DfMp3_Packet_SIZE] = { 0x7E,
+                                         0xFF,
+                                         06,
+                                         command,
+                                         _feedback ? 0x01 : 0x00,
+                                         static_cast<uint8_t>(arg >> 8),
+                                         static_cast<uint8_t>(arg & 0x00ff),
+                                         00,
+                                         00,
+                                         0xEF
+                                       };
+
+      setChecksum(out);
+
+      // wait for spacing since last send
+      while (((millis() - _lastSend) < _lastSendSpace) /*|| !_isOnline*/)
+      {
+        // check for event messages from the device while
+        // we wait
+        loop();
+        delay(1);
+      }
+
+      _lastSendSpace = sendSpaceNeeded;
+      _serial.write(out, DfMp3_Packet_SIZE);
+
+#ifdef DEBUG_DFPLAYER_COMMUNICATION
+      Serial.print(F("["));
+      Serial.print(millis());
+      Serial.print(F("] Packet sent     (->): "));
+      for (int i = 0; i < DfMp3_Packet_SIZE; ++i) {
+        Serial.print(out[i], HEX);
+        Serial.print(F(" "));
+      }
+      Serial.print(F("  -> Cmd: "));
+      Serial.print(command, HEX);
+      Serial.print(F(" ("));
+      Serial.print(command2Name(command));
+      Serial.print(F(")"));
+      Serial.print(F(", arg: "));
+      Serial.print(arg);
+      Serial.println();
+#endif
+
+      _lastSend = millis();
+    }
+
+    bool readPacket(uint8_t* command, uint16_t* argument)
+    {
+      uint8_t in[DfMp3_Packet_SIZE] = { 0 };
+      uint8_t read;
+
+      // init our out args always
+      *command = 0;
+      *argument = 0;
+
+      // try to sync our reads to the packet start
+      do
+      {
+        // we use readBytes as it gives us the standard timeout
+        read = _serial.readBytes(&(in[DfMp3_Packet_StartCode]), 1);
+        if (read != 1)
+        {
+          // nothing read
+          *argument = DfMp3_Error_RxTimeout;
+          return false;
+        }
+      } while (in[DfMp3_Packet_StartCode] != 0x7e);
+
+      read += _serial.readBytes(in + 1, DfMp3_Packet_SIZE - 1);
+      if (read < DfMp3_Packet_SIZE)
+      {
+        // not enough bytes, corrupted packet
+        *argument = DfMp3_Error_PacketSize;
+        return false;
+      }
+
+#ifdef DEBUG_DFPLAYER_COMMUNICATION
+      Serial.print(F("["));
+      Serial.print(millis());
+      Serial.print(F("] Packet received (<-): "));
+      for (int i = 0; i < read; ++i) {
+        Serial.print(in[i], HEX);
+        Serial.print(F(" "));
+      }
+#endif
+
+      if (in[DfMp3_Packet_Version] != 0xFF ||
+          in[DfMp3_Packet_Length] != 0x06 ||
+          in[DfMp3_Packet_EndCode] != 0xef)
+      {
+        // invalid version or corrupted packet
+        *argument = DfMp3_Error_PacketHeader;
+#ifdef DEBUG_DFPLAYER_COMMUNICATION
+        Serial.println(F("  ==> ERROR Corrupted Frame"));
+#endif
+        return false;
+      }
+
+      if (!validateChecksum(in))
+      {
+        // checksum failed, corrupted packet
+        *argument = DfMp3_Error_PacketChecksum;
+#ifdef DEBUG_DFPLAYER_COMMUNICATION
+        Serial.println(F("  ==> ERROR Invalid Checksum"));
+#endif
+        return false;
+      }
+
+      *command = in[DfMp3_Packet_Command];
+      *argument = ((in[DfMp3_Packet_HiByteArgument] << 8) | in[DfMp3_Packet_LowByteArgument]);
+#ifdef DEBUG_DFPLAYER_COMMUNICATION
+      Serial.print(F("  <- Msg: "));
+      Serial.print(*command, HEX);
+      Serial.print(F(" ("));
+      Serial.print(command2Name(*command));
+      Serial.print(F(")"));
+      Serial.print(F(", arg: "));
+      Serial.print(*argument);
+      Serial.println();
+#endif
+
+      return true;
+    }
+
+#ifdef DEBUG_DFPLAYER_COMMUNICATION
+    const __FlashStringHelper* command2Name(uint8_t cmd)
+    {
+      switch (cmd) {
+        case 0x01:
+          return F("PlayNext");
+        case 0x02:
+          return F("PlayPrevious");
+        case 0x03:
+          return F("PlayTrack");
+        case 0x04:
+          return F("Volume+");
+        case 0x05:
+          return F("Volume-");
+        case 0x06:
+          return F("SetVolume");
+        case 0x07:
+          return F("SetEQ");
+        case 0x08:
+          return F("SetRepeatOne");
+        case 0x09:
+          return F("SetPlaybackDevice");
+        case 0x0a:
+          return F("Sleep");
+        case 0x0c:
+          return F("Reset");
+        case 0x0d:
+          return F("Play");
+        case 0x0e:
+          return F("Pause");
+        case 0x0f:
+          return F("PlayFolderTrack");
+        case 0x10:
+          return F("SetAmp");
+        case 0x11:
+          return F("SetRepeatAll");
+        case 0x12:
+          return F("PlayMP3");
+        case 0x13:
+          return F("PlayAd");
+        case 0x14:
+          return F("PlayTrack");
+        case 0x15:
+          return F("StopAd");
+        case 0x16:
+          return F("Stop");
+        case 0x17:
+          return F("SetRepeatFolder");
+        case 0x18:
+          return F("SetRandomPlay");
+        case 0x19:
+          return F("SetRepeatCurrent");
+        case 0x1a:
+          return F("SetDAC");
+
+        case 0x3a:
+          return F("DeviceAttached");
+        case 0x3b:
+          return F("DeviceRemoved");
+        case 0x3c:
+          return F("TrackFinishedUSB");
+        case 0x3d:
+          return F("TrackFinishedSD");
+        case 0x3f:
+          return F("StorageDevices");
+        case 0x40:
+          return F("Error");
+        case 0x41:
+          return F("ACK");
+        case 0x42:
+          return F("GetStatus");
+        case 0x43:
+          return F("GetVolume");
+        case 0x44:
+          return F("GetEQ");
+        case 0x47:
+          return F("GetNoTracksUSB");
+        case 0x48:
+          return F("GetNoTracksSD");
+        case 0x4b:
+          return F("GetCurrentTrackUSB");
+        case 0x4c:
+          return F("GetCurrentTrackSD");
+        case 0x4e:
+          return F("GetNoTracksFolder");
+        case 0x4f:
+          return F("GetNoFoldersCurrentStorageDevice");
+
+        default:
+          return F("N/A");
+      }
+    }
+#endif
+
+    uint16_t listenForReply(uint8_t command)
+    {
+      uint8_t replyCommand = 0;
+      uint16_t replyArg = 0;
+
+      do
+      {
+        if (readPacket(&replyCommand, &replyArg))
+        {
+          if (command != 0 && command == replyCommand)
+          {
+            return replyArg;
+          }
+          else
+          {
+            switch (replyCommand)
+            {
+              case 0x3D: // micro sd
+              case 0x3C: // usb
+                T_NOTIFICATION_METHOD::OnPlayFinished(replyArg);
+                break;
+
+              case 0x3F:
+                if (replyArg & 0x01)
+                {
+                  _isOnline = true;
+                  T_NOTIFICATION_METHOD::OnUsbOnline(replyArg);
+                }
+                if (replyArg & 0x02)
+                {
+                  _isOnline = true;
+                  T_NOTIFICATION_METHOD::OnCardOnline(replyArg);
+                }
+                break;
+
+              case 0x3A:
+                if (replyArg & 0x01)
+                {
+                  _isOnline = true;
+                  T_NOTIFICATION_METHOD::OnUsbInserted(replyArg);
+                }
+                else if (replyArg & 0x02)
+                {
+                  _isOnline = true;
+                  T_NOTIFICATION_METHOD::OnCardInserted(replyArg);
+                }
+                break;
+
+              case 0x3B:
+                if (replyArg & 0x01)
+                {
+                  T_NOTIFICATION_METHOD::OnUsbRemoved(replyArg);
+                }
+                else if (replyArg & 0x02)
+                {
+                  T_NOTIFICATION_METHOD::OnCardRemoved(replyArg);
+                }
+                break;
+
+              case 0x40:
+                T_NOTIFICATION_METHOD::OnError(replyArg);
+                return 0;
+                break;
+
+              default:
+                // unknown/unsupported command reply
+                break;
+            }
+          }
+        }
+        else
+        {
+          if (replyArg != 0)
+          {
+            T_NOTIFICATION_METHOD::OnError(replyArg);
+            if (_serial.available() == 0)
+            {
+              return 0;
+            }
+          }
+        }
+      } while (command != 0);
+
+      return 0;
+    }
+
+    uint16_t calcChecksum(uint8_t* packet)
+    {
+      uint16_t sum = 0;
+      for (int i = DfMp3_Packet_Version; i < DfMp3_Packet_HiByteCheckSum; i++)
+      {
+        sum += packet[i];
+      }
+      return -sum;
+    }
+
+    void setChecksum(uint8_t* out)
+    {
+      uint16_t sum = calcChecksum(out);
+
+      out[DfMp3_Packet_HiByteCheckSum] = (sum >> 8);
+      out[DfMp3_Packet_LowByteCheckSum] = (sum & 0xff);
+    }
+
+    bool validateChecksum(uint8_t* in)
+    {
+      uint16_t sum = calcChecksum(in);
+      return (sum == static_cast<uint16_t>((in[DfMp3_Packet_HiByteCheckSum] << 8) | in[DfMp3_Packet_LowByteCheckSum]));
+    }
+};
