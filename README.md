@@ -6,7 +6,7 @@ Connect your Arduino/DFPlayer model like this:
 D2 ---- 1k ----- RX(DFPlayer)
 D3 ------------- TX(DFPlayer)
 VCC ------------ VCC(DFPlayer)
-GND ------------ GND(DFPlayer
+GND ------------ GND(DFPlayer)
 ```
 
 Optional: Connect USB Stick to D+/D- of DFPlayer (and VCC/GND accordingly).
