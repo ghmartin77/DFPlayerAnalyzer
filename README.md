@@ -11,6 +11,8 @@ GND ------------ GND(DFPlayer
 
 Optional: Connect USB Stick to D+/D- of DFPlayer (and VCC/GND accordingly).
 
+![](assets/breadboard.png)
+
 Upload the sketch to an Arduino (e.g. Nano), configure console for 115200 Baud, run the sketch, collect the output and [create an issue for your player version](https://github.com/ghmartin77/DFPlayerAnalyzer/issues?q=is%3Aissue+is%3Aopen+sort%3Aupdated-desc) if not already available.
 
 Setup of SD card (minimum):
