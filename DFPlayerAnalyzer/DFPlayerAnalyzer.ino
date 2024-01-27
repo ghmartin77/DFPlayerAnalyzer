@@ -599,18 +599,30 @@ class TestContinuePlaybackAfterAd : public Test {
         busyWait(2000);
         int track = player.getCurrentTrack();
         player.playAdvertisement(100);
-        busyWait(500);
-        int trackAd = player.getCurrentTrack();
-        while (trackAd != lastGlobalTrackFinished) {
-          busyWait(200);
+        // try to get currently playing advertisement track number
+        int trackAd = -1;
+        int attemps = 5;
+        while (attemps-- && (trackAd == -1)){
+          busyWait(500);
+          int cur_track = player.getCurrentTrack();
+          if (cur_track)
+            trackAd = cur_track;
         }
-        busyWait(500);
-        if (isPlaying()) {
-          while (track != lastGlobalTrackFinished) {
-            busyWait(200);
+        // check if we know played track number for ADV
+        if (trackAd != -1){
+          while (trackAd != lastGlobalTrackFinished) {
+            busyWait(1200);
           }
+          busyWait(500);
+          if (isPlaying()) {
+            while (track != lastGlobalTrackFinished) {
+              busyWait(200);
+            }
+          }
+          continueAfterAdWorkingSd = (track == lastGlobalTrackFinished);
+        } else {
+          continueAfterAdWorkingSd = false;
         }
-        continueAfterAdWorkingSd = (track == lastGlobalTrackFinished);
       }
 
       if (usbAvailable) {
