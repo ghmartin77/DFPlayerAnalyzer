@@ -94,6 +94,13 @@ template<class T_SERIAL_METHOD, class T_NOTIFICATION_METHOD> class DFMiniMp3
       _lastSend = millis();
     }
 
+    void begin(int8_t rxPin, int8_t txPin, unsigned long baud = 9600)
+    {
+      _serial.begin(baud, SERIAL_8N1, rxPin, txPin);
+      _serial.setTimeout(TIMEOUT_DEFAULT);
+      _lastSend = millis();
+    }
+
     void loop()
     {
       while (_serial.available() >= DfMp3_Packet_SIZE)
@@ -101,6 +108,7 @@ template<class T_SERIAL_METHOD, class T_NOTIFICATION_METHOD> class DFMiniMp3
         listenForReply(0x00);
       }
 
+#ifndef HW_SERIAL
       if (_serial.overflow()) {
 #ifdef DEBUG_DFPLAYER_COMMUNICATION
         Serial.print("[");
@@ -109,7 +117,7 @@ template<class T_SERIAL_METHOD, class T_NOTIFICATION_METHOD> class DFMiniMp3
 #endif
         _serial.flush();
       }
-
+#endif
     }
 
     // the track as enumerated across all folders

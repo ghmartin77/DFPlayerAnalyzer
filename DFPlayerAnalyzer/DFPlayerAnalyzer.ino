@@ -1,7 +1,13 @@
 #include <Arduino.h>
+
+// if you use hardware serial port (i.e. esp32) - uncomment this
+//#define HW_SERIAL
+
+#ifndef HW_SERIAL
 #include <SoftwareSerial.h>
 #include <avr/sleep.h>
 #include <avr/eeprom.h>
+#endif
 #define DEBUG_DFPLAYER_COMMUNICATION
 #include "DFMiniMp3.h"
 
@@ -13,7 +19,18 @@ void initDFPlayer();
 void readFolderTrackCounts();
 boolean isPlaying();
 
+#ifndef HW_SERIAL
+// Softserial instance
 SoftwareSerial softSerial(3, 2); // RX, TX
+#endif
+
+#ifndef HW_SERIAL
+DFMiniMp3<SoftwareSerial, Mp3Notify> player(softSerial);
+#else
+// If you are using HardWare serial, then specify it's instance here
+DFMiniMp3<SoftwareSerial, Mp3Notify> player(Serial1);
+#endif
+
 
 volatile boolean error = false;
 volatile uint16_t errCode = 0;
@@ -33,8 +50,6 @@ uint8_t cntUsbInsertedCallback = 0;
 uint8_t cntUsbRemovedCallback = 0;
 
 unsigned long nowMs;
-
-DFMiniMp3<SoftwareSerial, Mp3Notify> player(softSerial);
 
 class Mp3Notify
 {
@@ -774,7 +789,12 @@ void setup() {
   Serial.print(F(" - Starting up...\n\n"));
 
   player.setACK(false);
+  // comment out this line if you use hardware serial with custom pins
   player.begin();
+
+  // Uncomment this if you use hardware serial with custom pins, i.e. esp32 board
+  //player.begin(12, 13); // rx, tx gpio
+
 
   TestConnectivity t0;
   TestDiscoverDevices t1;
